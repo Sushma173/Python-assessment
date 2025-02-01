@@ -1,0 +1,140 @@
+[01-02-2025 10:25] 😇😇: from django.db import models
+from ckeditor.fields import RichTextField
+from googletrans import Translator
+from django.core.cache import cache
+
+translator = Translator()
+
+class FAQ(models.Model):
+    question = models.TextField()
+    answer = RichTextField()
+    question_hi = models.TextField(blank=True, null=True)
+    question_bn = models.TextField(blank=True, null=True)
+
+    def translate_text(self, text, lang):
+        """ Translates text to a given language """
+        if not text:
+            return None
+        cache_key = f"translation:{text}:{lang}"
+        cached_translation = cache.get(cache_key)
+        if cached_translation:
+            return cached_translation
+        try:
+            translated_text = translator.translate(text, dest=lang).text
+            cache.set(cache_key, translated_text, timeout=86400)  # Cache for 1 day
+            return translated_text
+        except Exception:
+            return text  # Fallback to original text
+
+    def get_translated_question(self, lang='en'):
+        """ Retrieve translated question dynamically """
+        translations = {'hi': self.question_hi, 'bn': self.question_bn}
+        return translations.get(lang, self.question) or self.translate_text(self.question, lang)
+
+    def save(self, *args, **kwargs):
+        """ Auto-translate FAQs on save """
+        if not self.question_hi:
+            self.question_hi = self.translate_text(self.question, 'hi')
+        if not self.question_bn:
+            self.question_bn = self.translate_text(self.question, 'bn')
+        super().save(*args, **kwargs)
+
+    def _str_(self):
+        return self.question
+[01-02-2025 10:25] 😇😇: django-admin startproject faq_project
+cd faq_project
+django-admin startapp faq
+[01-02-2025 10:26] 😇😇: from rest_framework import serializers
+from .models import FAQ
+
+class FAQSerializer(serializers.ModelSerializer):
+    translated_question = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FAQ
+        fields = ['id', 'question', 'answer', 'translated_question']
+
+    def get_translated_question(self, obj):
+        request = self.context.get('request')
+        lang = request.GET.get('lang', 'en')
+        return obj.get_translated_question(lang)
+[01-02-2025 10:26] 😇😇: from rest_framework import generics
+from rest_framework.response import Response
+from .models import FAQ
+from .serializers import FAQSerializer
+from django.core.cache import cache
+
+class FAQListView(generics.ListAPIView):
+    queryset = FAQ.objects.all()
+    serializer_class = FAQSerializer
+
+    def get(self, request, *args, **kwargs):
+        lang = request.GET.get('lang', 'en')
+        cache_key = f"faqs:{lang}"
+        cached_faqs = cache.get(cache_key)
+
+        if cached_faqs:
+            return Response(cached_faqs)
+
+        faqs = self.get_queryset()
+        serializer = self.get_serializer(faqs, many=True, context={"request": request})
+        
+        cache.set(cache_key, serializer.data, timeout=3600)  # Cache for 1 hour
+        return Response(serializer.data)
+[01-02-2025 10:27] 😇😇: from django.urls import path
+from .views import FAQListView
+
+urlpatterns = [
+    path('api/faqs/', FAQListView.as_view(), name='faq-list'),
+]
+[01-02-2025 10:27] 😇😇: from django.contrib import admin
+from .models import FAQ
+
+class FAQAdmin(admin.ModelAdmin):
+    list_display = ('question', 'question_hi', 'question_bn')
+    search_fields = ('question',)
+
+admin.site.register(FAQ, FAQAdmin)
+[01-02-2025 10:28] 😇😇: CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:6379/1",
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        }
+    }
+}
+[01-02-2025 10:28] 😇😇: import pytest
+from django.urls import reverse
+from rest_framework.test import APIClient
+from .models import FAQ
+
+@pytest.mark.django_db
+def test_faq_list():
+    client = APIClient()
+    FAQ.objects.create(question="What is Django?", answer="Django is a web framework.")
+
+    response = client.get(reverse('faq-list'))
+    
+    assert response.status_code == 200
+    assert "What is Django?" in response.data[0]["question"]
+[01-02-2025 10:28] 😇😇: git commit -m "feat: Add multilingual FAQ model"
+git commit -m "fix: Improve translation caching"
+git commit -m "docs: Update README with API examples"
+[01-02-2025 10:28] 😇😇: FROM python:3.9
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "faq_project.wsgi"]
+[01-02-2025 10:29] 😇😇: version: '3'
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+  redis:
+    image: "redis:alpine"
+[01-02-2025 10:29] 😇😇: docker-compose up --build
